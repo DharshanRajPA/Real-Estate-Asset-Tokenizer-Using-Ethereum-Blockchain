@@ -1,0 +1,93 @@
+/* Header Container */
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 2rem;
+  background-color: #a8e6a2;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+}
+
+/* Logo / Brand */
+header h1 {
+  color: #2e7d32;
+  margin: 0;
+  font-size: 1.8rem;
+}
+
+/* Navigation Links */
+header nav {
+  display: flex;
+  align-items: center;
+}
+
+header nav a {
+  margin-left: 1rem;
+  color: #2e7d32;
+  text-decoration: none;
+  font-weight: bold;
+  font-size: 1rem;
+  transition: color 0.2s ease;
+}
+
+header nav a:hover {
+  color: #1b5e20;
+}
+
+/* Wallet Display */
+.wallet-display {
+  padding: 8px 12px;
+  background-color: #2e7d32;
+  color: white;
+  border-radius: 6px;
+  font-weight: 500;
+  font-size: 0.9rem;
+  margin-left: 1rem;
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* Wallet Connect Button */
+.wallet-connect {
+  padding: 8px 12px;
+  background-color: #007bff;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  margin-left: 1rem;
+  font-weight: 500;
+  transition: background-color 0.3s ease, transform 0.2s ease;
+}
+
+.wallet-connect:hover {
+  background-color: #0056b3;
+  transform: translateY(-2px);
+}
+
+/* Logout Button */
+.logout-button {
+  background-color: #27ae60;
+  color: white;
+  border: none;
+  padding: 0.6rem 1.4rem;
+  border-radius: 8px;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background-color 0.3s ease, transform 0.2s ease;
+  margin-left: 1rem;
+  box-shadow: 0 4px 10px rgba(39, 174, 96, 0.2);
+}
+
+.logout-button:hover {
+  background-color: #219150;
+  transform: translateY(-2px);
+}
+
+.eth-rate-display {
+  margin-left: 1rem;
+  font-weight: bold;
+  color: #00a86b;
+}
