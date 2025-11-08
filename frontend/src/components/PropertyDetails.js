@@ -123,6 +123,24 @@ function PropertyDetails() {
 
       const provider = new ethers.BrowserProvider(window.ethereum);
       const signer = await provider.getSigner();
+      
+      // Check if user is trying to buy with admin wallet
+      if (buyerAddress.toLowerCase() === ADMIN_WALLET_ADDRESS?.toLowerCase()) {
+        const errorMsg = 
+          "❌ Admin Wallet Detected!\n\n" +
+          "You are using the ADMIN wallet to purchase tokens.\n\n" +
+          "Please:\n" +
+          "1. Switch to a CLIENT account in MetaMask\n" +
+          "2. Use Ganache Account 2-10 (not Account 1)\n" +
+          "3. Make sure you're connected to the correct account\n\n" +
+          "Admin wallet should only be used for:\n" +
+          "- Creating properties\n" +
+          "- Deploying contracts\n" +
+          "- Receiving payments";
+        alert(errorMsg);
+        setIsPurchasing(false);
+        return;
+      }
 
       // Calculate ETH to send
       const totalInr = property.pricePerToken * tokensToBuy;
@@ -276,28 +294,28 @@ function PropertyDetails() {
       console.log("🔍 Checking asset tokenization for assetID:", assetID);
 
       // Check if asset has been tokenized
-      // Try to check both mappings, handling BAD_DATA errors gracefully
+      // Use view functions instead of direct mapping reads to avoid BAD_DATA errors
       let tokenID;
       let isTokenized = false;
       let totalSupply = 0n;
       
       try {
-        // Try to get total supply first
+        // Use the contract's view function instead of reading mapping directly
+        // This is more reliable and avoids BAD_DATA errors
         try {
-          totalSupply = await tokenizer.totalAssetTokenSupplyMap(assetID);
-          console.log("📊 Total Supply:", totalSupply.toString());
+          totalSupply = await tokenizer.getAssetTokenTotalSupply(assetID);
+          console.log("📊 Total Supply (from view function):", totalSupply.toString());
         } catch (supplyError) {
-          // If BAD_DATA error, asset doesn't exist (not tokenized)
-          if (supplyError.code === "BAD_DATA" || supplyError.message?.includes("could not decode") || supplyError.message?.includes("value=\"0x\"")) {
-            console.log("📊 Total Supply check failed - asset not tokenized");
-            totalSupply = 0n;
-          } else {
-            throw supplyError; // Re-throw if it's a different error
-          }
+          // If error, treat as not tokenized
+          console.log("📊 Total Supply check failed - asset not tokenized");
+          console.log("   Error:", supplyError.message);
+          totalSupply = 0n;
         }
         
         if (totalSupply > 0n) {
           // Asset is tokenized, now get tokenID
+          // Read the mapping directly - if it returns 0, that's a contract issue
+          // But we know totalSupply > 0, so tokenID should exist
           try {
             tokenID = await tokenizer.assetTokenMap(assetID);
             console.log("🆔 Token ID:", tokenID.toString());
@@ -309,35 +327,28 @@ function PropertyDetails() {
             }
             isTokenized = true;
           } catch (tokenError) {
-            // If assetTokenMap fails but totalSupply exists, there's a contract issue
-            if (tokenError.code === "BAD_DATA" || tokenError.message?.includes("could not decode") || tokenError.message?.includes("value=\"0x\"")) {
-              // Even though supply exists, tokenID mapping failed - treat as not tokenized
-              console.warn("⚠️ TokenID mapping failed - treating as not tokenized");
-              throw new Error("Asset not tokenized - tokenID mapping failed");
+            // If reading mapping fails with BAD_DATA, but totalSupply > 0, 
+            // this is unusual but we can still proceed since we know it's tokenized
+            if (tokenError.code === "BAD_DATA" || tokenError.message?.includes("could not decode")) {
+              console.warn("⚠️ Could not read tokenID mapping, but totalSupply > 0");
+              console.warn("   This might be a network issue, but asset is tokenized");
+              // Since totalSupply > 0, we know it's tokenized, so we can proceed
+              // We'll need tokenID for the claim, so this is still an error
+              throw new Error("Could not retrieve tokenID - network or contract issue");
+            } else {
+              throw tokenError;
             }
-            console.error("❌ Error getting tokenID:", tokenError);
-            const errorMsg = 
-              "❌ Contract State Error!\n\n" +
-              "Asset appears to be tokenized (supply > 0) but tokenID mapping failed.\n\n" +
-              "This might indicate a contract state issue.\n\n" +
-              "Error: " + (tokenError.message || "Unknown");
-            alert(errorMsg);
-            setIsPurchasing(false);
-            return;
           }
         } else {
           // Total supply is 0, asset not tokenized
           throw new Error("Asset not tokenized - total supply is 0");
         }
       } catch (error) {
-        // Check if this is a "not tokenized" error or a decode error
+        // Check if this is a "not tokenized" error
         const isNotTokenizedError = 
           error.message?.includes("not tokenized") ||
           error.message?.includes("total supply is 0") ||
-          error.code === "BAD_DATA" ||
-          error.message?.includes("BAD_DATA") ||
-          error.message?.includes("could not decode") ||
-          error.message?.includes("value=\"0x\"");
+          totalSupply === 0n;
         
         if (isNotTokenizedError) {
           // Asset is definitely not tokenized
@@ -347,28 +358,15 @@ function PropertyDetails() {
             "The property must be tokenized by the admin before tokens can be purchased.\n\n" +
             "Steps to fix:\n" +
             "1. Admin should go to 'Create Property' page\n" +
-            "2. Re-create the property (this will tokenize it)\n" +
-            "3. Or manually call:\n" +
-            "   - assetContract.addAsset(assetID, assetHash)\n" +
-            "   - tokenizerContract.mintAssetTokens(assetID, tokens)\n\n" +
+            "2. Re-create the property (this will tokenize it)\n\n" +
             "Asset ID: " + assetID;
           
           console.error("❌ Asset not tokenized:", {
             assetID,
             error: error.message,
-            code: error.code,
-            info: error.info,
+            totalSupply: totalSupply.toString(),
             propertyId: property._id,
             propertyName: property.propertyName
-          });
-          
-          // Log detailed info for debugging
-          console.log("📋 Property Details:", {
-            id: property._id,
-            name: property.propertyName,
-            location: property.propertyLocation,
-            tokens: property.propertyTokens,
-            assetID: assetID
           });
           
           alert(errorMsg);
@@ -384,8 +382,7 @@ function PropertyDetails() {
             "- Contract address might be incorrect\n" +
             "- Network connection issue\n" +
             "- Asset not tokenized yet\n\n" +
-            "Error: " + (error.message || "Unknown error") + "\n" +
-            "Code: " + (error.code || "N/A");
+            "Error: " + (error.message || "Unknown error");
           alert(errorMsg);
           setIsPurchasing(false);
           return;

@@ -156,9 +156,19 @@ function CreateProperty() {
 
       // ✅ Correctly convert Mongo ObjectId (24 hex chars) to bytes12
       const rawId = propertyId.toLowerCase();
+      
+      // Validate propertyId format (should be 24 hex characters)
+      if (!rawId.match(/^[0-9a-f]{24}$/)) {
+        throw new Error(`Invalid propertyId format: ${propertyId}. Expected 24 hex characters.`);
+      }
+      
       const assetID = ethers.zeroPadValue("0x" + rawId, 12);
 
-      console.log("AssetID (bytes12):", assetID);
+      console.log("📋 Tokenization Details:");
+      console.log("   Property ID:", propertyId);
+      console.log("   Raw ID (lowercase):", rawId);
+      console.log("   AssetID (bytes12):", assetID);
+      console.log("   AssetID length:", assetID.length, "characters");
 
       const hashInput = `${propertyName}:${propertyLocation}:${propertyPrice}`;
       const assetHash = ethers.keccak256(ethers.toUtf8Bytes(hashInput));
@@ -179,17 +189,31 @@ function CreateProperty() {
       );
 
       console.log("📦 Adding asset to blockchain...");
+      console.log("   Asset Contract:", assetContractAddress);
+      console.log("   AssetID:", assetID);
+      console.log("   AssetHash:", assetHash);
+      
       const tx1 = await assetContract.addAsset(assetID, assetHash);
-      await tx1.wait();
-      console.log("✅ Asset added!");
-      console.log({ assetID, propertyTokens });
+      const receipt1 = await tx1.wait();
+      console.log("✅ Asset added! Transaction hash:", receipt1.hash);
+      console.log("   Transaction status:", receipt1.status === 1 ? "Success" : "Failed");
+      
+      if (receipt1.status !== 1) {
+        throw new Error("Asset addition transaction failed - transaction was reverted");
+      }
+      
       console.log("🪙 Minting tokens...");
+      console.log("   Tokenizer Contract:", tokenizerContractAddress);
+      console.log("   AssetID:", assetID);
+      console.log("   Token Amount:", propertyTokens);
+      
       const tx2 = await tokenizerContract.mintAssetTokens(
         assetID,
         propertyTokens
       );
       const receipt2 = await tx2.wait();
       console.log("✅ Tokens minted! Transaction hash:", receipt2.hash);
+      console.log("   Transaction status:", receipt2.status === 1 ? "Success" : "Failed");
       
       // Verify transaction succeeded
       if (receipt2.status !== 1) {
@@ -197,62 +221,59 @@ function CreateProperty() {
       }
       console.log("✅ Minting transaction confirmed (status: success)");
       
-      // Try to verify tokenization (optional - transaction success is the main indicator)
-      // If verification fails, we'll still consider it successful since the transaction succeeded
-      console.log("🔍 Attempting to verify tokenization...");
-      let verificationSucceeded = false;
+      // Verify tokenization using view functions (more reliable than events or direct mapping reads)
+      // This avoids BAD_DATA errors by using the contract's dedicated view functions
+      console.log("🔍 Verifying tokenization using view functions...");
       
       try {
-        // Wait a bit for state to update
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        // Wait a moment for state to update
+        await new Promise(resolve => setTimeout(resolve, 1000));
         
-        // Try to verify (with retry)
-        for (let attempt = 1; attempt <= 3; attempt++) {
+        // Use the contract's view function instead of reading mapping directly
+        // This is the most reliable way and avoids BAD_DATA errors
+        const verifiedTotalSupply = await tokenizerContract.getAssetTokenTotalSupply(assetID);
+        console.log("✅ Verification - Total Supply:", verifiedTotalSupply.toString());
+        
+        if (verifiedTotalSupply > 0n) {
+          console.log("✅ Tokenization verified successfully!");
+          console.log("   Total Supply:", verifiedTotalSupply.toString());
+          console.log("   Property is now tokenized and ready for purchase.");
+        } else {
+          console.warn("⚠️ Verification shows totalSupply is 0, but transaction succeeded");
+          console.warn("   This might be a timing issue - property should still be tokenized");
+        }
+        
+      } catch (verifyError) {
+        // Verification failed, but transaction succeeded so it's okay
+        // The transaction receipt is the source of truth
+        console.warn("⚠️ Could not verify via view function:", verifyError.message);
+        console.warn("   Transaction succeeded, so tokenization should be complete.");
+        console.warn("   This might be a network timing issue - the property should still be tokenized.");
+      }
+      
+      // Also check events as a secondary verification
+      try {
+        const assetTokenizedEvent = receipt2.logs.find(log => {
           try {
-            const totalSupply = await tokenizerContract.totalAssetTokenSupplyMap(assetID);
-            const tokenID = await tokenizerContract.assetTokenMap(assetID);
-            
-            if (totalSupply > 0n && tokenID > 0n) {
-              console.log(`✅ Verification successful (attempt ${attempt})!`);
-              console.log("   Total Supply:", totalSupply.toString());
-              console.log("   Token ID:", tokenID.toString());
-              verificationSucceeded = true;
-              break;
-            } else {
-              console.log(`⚠️ Verification attempt ${attempt} - values are 0, retrying...`);
-              if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 2000));
-            }
-          } catch (verifyError) {
-            // Handle BAD_DATA or other errors
-            if (verifyError.code === "BAD_DATA" || verifyError.message?.includes("could not decode")) {
-              console.log(`⚠️ Verification attempt ${attempt} - BAD_DATA error (state may not be updated yet)`);
-              if (attempt < 3) {
-                await new Promise(resolve => setTimeout(resolve, 2000));
-                continue;
-              }
-            } else {
-              console.warn(`⚠️ Verification attempt ${attempt} failed:`, verifyError.message);
-              if (attempt < 3) {
-                await new Promise(resolve => setTimeout(resolve, 2000));
-                continue;
-              }
-            }
+            const parsed = tokenizerContract.interface.parseLog(log);
+            return parsed && parsed.name === "AssetTokenized";
+          } catch {
+            return false;
           }
-        }
+        });
         
-        if (!verificationSucceeded) {
-          console.warn("⚠️ Verification could not confirm tokenization, but transaction succeeded.");
-          console.warn("   The property should still be tokenized. You can verify by trying to purchase tokens.");
+        if (assetTokenizedEvent) {
+          const parsed = tokenizerContract.interface.parseLog(assetTokenizedEvent);
+          console.log("✅ AssetTokenized event found in transaction receipt!");
         }
-      } catch (verifyErr) {
-        // Verification is optional - don't fail the whole process if it fails
-        console.warn("⚠️ Verification step failed, but transaction succeeded:", verifyErr.message);
-        console.warn("   The minting transaction completed successfully, so tokenization should be complete.");
+      } catch (eventError) {
+        // Event parsing is optional
+        console.log("ℹ️ Event parsing skipped (not critical)");
       }
       
       // Transaction succeeded, so tokenization is complete
-      // Even if verification failed, we trust the transaction receipt
       console.log("✅ Tokenization complete! Transaction hash:", receipt2.hash);
+      console.log("   Property is now tokenized and ready for purchase.");
       return true; // Success
     } catch (err) {
       console.error("❌ Error in on-chain operation:", err);
