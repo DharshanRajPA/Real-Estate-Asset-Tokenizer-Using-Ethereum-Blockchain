@@ -21,6 +21,7 @@ function PropertyDetails() {
   const [tokensToBuy, setTokensToBuy] = useState(0);
   const [ethRate, setEthRate] = useState(null);
   const [isPurchasing, setIsPurchasing] = useState(false);
+  const [walletBalance, setWalletBalance] = useState(null);
 
   useEffect(() => {
     const token = localStorage.getItem("token");
@@ -66,6 +67,28 @@ function PropertyDetails() {
     fetchRate();
   }, []);
 
+  useEffect(() => {
+    const fetchWalletBalance = async () => {
+      if (typeof window.ethereum !== "undefined") {
+        try {
+          const provider = new ethers.BrowserProvider(window.ethereum);
+          const accounts = await provider.send("eth_accounts", []);
+          if (accounts.length > 0) {
+            const balance = await provider.getBalance(accounts[0]);
+            setWalletBalance(ethers.formatEther(balance));
+          }
+        } catch (error) {
+          console.error("Error fetching wallet balance:", error);
+        }
+      }
+    };
+
+    fetchWalletBalance();
+    // Refresh balance every 10 seconds
+    const interval = setInterval(fetchWalletBalance, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
   const availableTokens =
     property && property.tokenHolders.length > 0
       ? property.tokenHolders[0].tokensHeld
@@ -104,10 +127,139 @@ function PropertyDetails() {
       // Calculate ETH to send
       const totalInr = property.pricePerToken * tokensToBuy;
       const totalEth = totalInr / ethRate;
+      const ethValue = ethers.parseEther(totalEth.toFixed(18));
+
+      // Check wallet balance FIRST before attempting any gas estimation
+      // DEBUG: This prevents "insufficient funds" errors by checking first
+      const balance = await provider.getBalance(buyerAddress);
+      console.log("💰 Current balance:", ethers.formatEther(balance), "ETH");
+      console.log("🔗 Wallet address:", buyerAddress);
+      
+      // DEBUG: Check network to help identify if on wrong network
+      const network = await provider.getNetwork();
+      console.log("🌐 Network:", network.name, "Chain ID:", network.chainId.toString());
+
+      // If balance is 0, don't even try to estimate gas - show error immediately
+      if (balance === 0n) {
+        const networkName = network.name || `Chain ${network.chainId}`;
+        let errorMsg = 
+          `❌ Insufficient funds!\n\n` +
+          `Your wallet balance is 0 ETH.\n\n` +
+          `Network: ${networkName} (Chain ID: ${network.chainId})\n\n`;
+        
+        // Add network-specific help
+        if (network.chainId === 11155111n) { // Sepolia
+          errorMsg += `Get test ETH from: https://sepoliafaucet.com/`;
+        } else if (network.chainId === 5n) { // Goerli
+          errorMsg += `Get test ETH from: https://goerlifaucet.com/`;
+        } else if (network.chainId === 1337n || network.chainId === 5777n) { // Local/Ganache
+          errorMsg += `This is a local network. Add ETH from Ganache or your local node.`;
+        } else {
+          errorMsg += `Please add ETH to your wallet and try again.`;
+        }
+        
+        console.error("❌ Transaction blocked - wallet has 0 ETH");
+        alert(errorMsg);
+        setIsPurchasing(false);
+        return;
+      }
+
+      // Get current gas price (handle networks that don't support EIP-1559)
+      let gasPrice = 0n;
+      try {
+        const feeData = await provider.getFeeData();
+        // Prefer gasPrice (legacy) or maxFeePerGas (EIP-1559)
+        gasPrice = feeData.gasPrice || feeData.maxFeePerGas || 0n;
+        if (gasPrice === 0n) {
+          // Fallback: try to get gas price directly
+          const block = await provider.getBlock("latest");
+          if (block && block.gasPrice) {
+            gasPrice = block.gasPrice;
+          }
+        }
+      } catch (feeError) {
+        // Some networks (like Ganache) don't support eth_maxPriorityFeePerGas
+        console.warn("⚠️ Fee data retrieval failed, using fallback:", feeError);
+        try {
+          // Fallback: get gas price from latest block
+          const block = await provider.getBlock("latest");
+          if (block && block.gasPrice) {
+            gasPrice = block.gasPrice;
+          } else {
+            // Last resort: use a default gas price (20 gwei)
+            gasPrice = ethers.parseUnits("20", "gwei");
+          }
+        } catch (blockError) {
+          // Last resort: use a default gas price (20 gwei)
+          gasPrice = ethers.parseUnits("20", "gwei");
+          console.warn("⚠️ Using default gas price:", ethers.formatUnits(gasPrice, "gwei"), "Gwei");
+        }
+      }
+
+      // Estimate gas costs (only if balance > 0)
+      let estimatedGas;
+      try {
+        estimatedGas = await provider.estimateGas({
+          from: buyerAddress,
+          to: ADMIN_WALLET_ADDRESS,
+          value: ethValue,
+        });
+      } catch (gasError) {
+        // If gas estimation fails (e.g., insufficient funds), use a default safe estimate
+        estimatedGas = 21000n; // Standard ETH transfer gas
+        console.warn("⚠️ Gas estimation failed, using default:", gasError);
+      }
+      
+      // Calculate total required (value + gas costs)
+      const gasCost = estimatedGas * gasPrice;
+      const totalRequired = ethValue + gasCost;
+
+      console.log("📊 Transaction details:");
+      console.log("   ETH to send:", ethers.formatEther(ethValue), "ETH");
+      console.log("   Estimated gas:", estimatedGas.toString());
+      console.log("   Gas price:", ethers.formatEther(gasPrice), "ETH");
+      console.log("   Gas cost:", ethers.formatEther(gasCost), "ETH");
+      console.log("   Total required:", ethers.formatEther(totalRequired), "ETH");
+
+      // Check if balance is sufficient
+      // DEBUG: This is the critical check that prevents the error you encountered
+      if (balance < totalRequired) {
+        const shortfall = totalRequired - balance;
+        const networkName = network.name || `Chain ${network.chainId}`;
+        
+        // Build helpful error message with network-specific guidance
+        let errorMsg = 
+          `❌ Insufficient funds!\n\n` +
+          `Your balance: ${ethers.formatEther(balance)} ETH\n` +
+          `Required: ${ethers.formatEther(totalRequired)} ETH\n` +
+          `Shortfall: ${ethers.formatEther(shortfall)} ETH\n\n` +
+          `Network: ${networkName} (Chain ID: ${network.chainId})\n\n`;
+        
+        // Add network-specific help
+        if (network.chainId === 11155111n) { // Sepolia
+          errorMsg += `Get test ETH from: https://sepoliafaucet.com/`;
+        } else if (network.chainId === 5n) { // Goerli
+          errorMsg += `Get test ETH from: https://goerlifaucet.com/`;
+        } else if (network.chainId === 1337n || network.chainId === 5777n) { // Local/Ganache
+          errorMsg += `This is a local network. Add ETH from Ganache or your local node.`;
+        } else {
+          errorMsg += `Please add ETH to your wallet and try again.`;
+        }
+        
+        console.error("❌ Transaction blocked - insufficient funds");
+        console.error("   Balance:", ethers.formatEther(balance), "ETH");
+        console.error("   Required:", ethers.formatEther(totalRequired), "ETH");
+        console.error("   Shortfall:", ethers.formatEther(shortfall), "ETH");
+        
+        alert(errorMsg);
+        setIsPurchasing(false);
+        return;
+      }
 
       const txPayment = await signer.sendTransaction({
         to: ADMIN_WALLET_ADDRESS,
-        value: ethers.parseEther(totalEth.toFixed(18)),
+        value: ethValue,
+        gasLimit: estimatedGas,
       });
 
       await txPayment.wait();
@@ -125,9 +277,70 @@ function PropertyDetails() {
       const tokenID = await tokenizer.assetTokenMap(assetID);
       console.log("🆔 Token ID:", tokenID.toString());
 
-      const tx = await tokenizer.claimAssetToken(assetID, tokensToBuy);
+      // Check balance again before second transaction (gas may have changed)
+      const balanceAfterFirstTx = await provider.getBalance(buyerAddress);
+      
+      // Get gas price for second transaction (handle networks that don't support EIP-1559)
+      let gasPrice2 = 0n;
+      try {
+        const feeData2 = await provider.getFeeData();
+        gasPrice2 = feeData2.gasPrice || feeData2.maxFeePerGas || 0n;
+        if (gasPrice2 === 0n) {
+          // Fallback: try to get gas price directly from block
+          const block = await provider.getBlock("latest");
+          if (block && block.gasPrice) {
+            gasPrice2 = block.gasPrice;
+          }
+        }
+      } catch (feeError2) {
+        // Some networks (like Ganache) don't support eth_maxPriorityFeePerGas
+        console.warn("⚠️ Fee data retrieval failed for second tx, using fallback:", feeError2);
+        try {
+          const block = await provider.getBlock("latest");
+          if (block && block.gasPrice) {
+            gasPrice2 = block.gasPrice;
+          } else {
+            // Use the gas price from first transaction as fallback
+            gasPrice2 = gasPrice;
+          }
+        } catch (blockError2) {
+          // Use the gas price from first transaction as fallback
+          gasPrice2 = gasPrice;
+        }
+      }
+      
+      // Estimate gas for claimAssetToken
+      let estimatedGas2;
+      try {
+        estimatedGas2 = await tokenizer.claimAssetToken.estimateGas(assetID, tokensToBuy);
+      } catch (gasError2) {
+        estimatedGas2 = 100000n; // Default estimate for contract call
+        console.warn("⚠️ Gas estimation for claimAssetToken failed, using default:", gasError2);
+      }
+
+      const gasCost2 = estimatedGas2 * gasPrice2;
+      
+      if (balanceAfterFirstTx < gasCost2) {
+        const errorMsg = 
+          `❌ Insufficient funds for token claim!\n\n` +
+          `Remaining balance: ${ethers.formatEther(balanceAfterFirstTx)} ETH\n` +
+          `Required for gas: ${ethers.formatEther(gasCost2)} ETH\n\n` +
+          `Please add more ETH to your wallet and try again.`;
+        
+        alert(errorMsg);
+        setIsPurchasing(false);
+        return;
+      }
+
+      const tx = await tokenizer.claimAssetToken(assetID, tokensToBuy, {
+        gasLimit: estimatedGas2,
+      });
       await tx.wait();
       console.log("✅ Token claimed on-chain");
+      
+      // Update wallet balance after successful transaction
+      const updatedBalance = await provider.getBalance(buyerAddress);
+      setWalletBalance(ethers.formatEther(updatedBalance));
 
       const res = await fetch(
         `http://localhost:3001/api/properties/update-holders/${property._id}`,
@@ -171,7 +384,46 @@ function PropertyDetails() {
       }
     } catch (err) {
       console.error("❌ Transaction failed:", err);
-      alert("Transaction failed. Please try again.");
+      
+      // Provide user-friendly error messages
+      let errorMessage = "Transaction failed. Please try again.";
+      
+      if (err.code === "INSUFFICIENT_FUNDS" || err.message?.includes("insufficient funds")) {
+        // DEBUG: This catches the error even if pre-check failed somehow
+        // The error message from the error object contains detailed info:
+        // - "have X want Y" shows balance vs required
+        // - Gas estimation failure means the node couldn't estimate due to insufficient funds
+        
+        let errorDetails = "Your wallet doesn't have enough ETH to cover the transaction value and gas fees.";
+        
+        // Try to extract error details from the error message
+        if (err.info?.error?.message) {
+          const match = err.info.error.message.match(/have (\d+) want (\d+)/);
+          if (match) {
+            // Use ethers.getBigInt() to convert string to BigInt (ESLint-safe)
+            const have = ethers.getBigInt(match[1]);
+            const want = ethers.getBigInt(match[2]);
+            const shortfall = want - have;
+            errorDetails = 
+              `Your balance: ${ethers.formatEther(have)} ETH\n` +
+              `Required: ${ethers.formatEther(want)} ETH\n` +
+              `Shortfall: ${ethers.formatEther(shortfall)} ETH`;
+          }
+        }
+        
+        errorMessage = 
+          "❌ Insufficient funds!\n\n" +
+          errorDetails + "\n\n" +
+          "Please add ETH to your wallet and try again.";
+      } else if (err.code === "ACTION_REJECTED" || err.message?.includes("User rejected")) {
+        errorMessage = "Transaction was cancelled by user.";
+      } else if (err.code === "NETWORK_ERROR" || err.message?.includes("network")) {
+        errorMessage = "Network error. Please check your connection and try again.";
+      } else if (err.message) {
+        errorMessage = `Transaction failed: ${err.message}`;
+      }
+      
+      alert(errorMessage);
     } finally {
       setIsPurchasing(false);
     }
@@ -211,6 +463,11 @@ function PropertyDetails() {
         <p>
           <strong>Tokens Available for Sale:</strong> {availableTokens}
         </p>
+        {walletBalance !== null && (
+          <p>
+            <strong>Your Wallet Balance:</strong> {parseFloat(walletBalance).toFixed(6)} ETH
+          </p>
+        )}
 
         <div className="buy-section">
           <label htmlFor="tokenInput">
