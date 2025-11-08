@@ -273,9 +273,108 @@ function PropertyDetails() {
 
       const rawId = property._id.toLowerCase();
       const assetID = ethers.zeroPadValue("0x" + rawId, 12);
+      console.log("🔍 Checking asset tokenization for assetID:", assetID);
 
-      const tokenID = await tokenizer.assetTokenMap(assetID);
-      console.log("🆔 Token ID:", tokenID.toString());
+      // Check if asset has been tokenized
+      // First check totalAssetTokenSupplyMap (more reliable for checking existence)
+      let tokenID;
+      let isTokenized = false;
+      
+      try {
+        // Check total supply first - if it's > 0, asset is tokenized
+        const totalSupply = await tokenizer.totalAssetTokenSupplyMap(assetID);
+        console.log("📊 Total Supply:", totalSupply.toString());
+        
+        if (totalSupply > 0n) {
+          // Asset is tokenized, now get tokenID
+          try {
+            tokenID = await tokenizer.assetTokenMap(assetID);
+            console.log("🆔 Token ID:", tokenID.toString());
+            
+            if (tokenID === 0n || tokenID.toString() === "0") {
+              // This shouldn't happen if totalSupply > 0, but handle it
+              console.warn("⚠️ Total supply exists but tokenID is 0 - contract state issue");
+              throw new Error("TokenID is 0 but supply exists");
+            }
+            isTokenized = true;
+          } catch (tokenError) {
+            // If assetTokenMap fails but totalSupply exists, there's a contract issue
+            console.error("❌ Error getting tokenID:", tokenError);
+            const errorMsg = 
+              "❌ Contract State Error!\n\n" +
+              "Asset appears to be tokenized (supply > 0) but tokenID mapping failed.\n\n" +
+              "This might indicate a contract state issue.\n\n" +
+              "Error: " + (tokenError.message || "Unknown");
+            alert(errorMsg);
+            setIsPurchasing(false);
+            return;
+          }
+        } else {
+          // Total supply is 0, asset not tokenized
+          throw new Error("Asset not tokenized - total supply is 0");
+        }
+      } catch (error) {
+        // Check if this is a "not tokenized" error or a decode error
+        const isNotTokenizedError = 
+          error.message?.includes("not tokenized") ||
+          error.message?.includes("total supply is 0") ||
+          error.code === "BAD_DATA" ||
+          error.message?.includes("BAD_DATA") ||
+          error.message?.includes("could not decode") ||
+          error.message?.includes("value=\"0x\"");
+        
+        if (isNotTokenizedError) {
+          // Asset is definitely not tokenized
+          const errorMsg = 
+            "❌ Asset Not Tokenized!\n\n" +
+            "This property hasn't been tokenized on the blockchain yet.\n\n" +
+            "The property must be tokenized by the admin before tokens can be purchased.\n\n" +
+            "Steps to fix:\n" +
+            "1. Admin should go to 'Create Property' page\n" +
+            "2. Re-create the property (this will tokenize it)\n" +
+            "3. Or manually call:\n" +
+            "   - assetContract.addAsset(assetID, assetHash)\n" +
+            "   - tokenizerContract.mintAssetTokens(assetID, tokens)\n\n" +
+            "Asset ID: " + assetID;
+          
+          console.error("❌ Asset not tokenized:", {
+            assetID,
+            error: error.message,
+            code: error.code,
+            info: error.info
+          });
+          alert(errorMsg);
+          setIsPurchasing(false);
+          return;
+        } else {
+          // Different error - could be network, contract, etc.
+          console.error("❌ Error checking asset tokenization:", error);
+          const errorMsg = 
+            "❌ Error checking asset tokenization!\n\n" +
+            "Could not verify if this property is tokenized.\n\n" +
+            "Possible issues:\n" +
+            "- Contract address might be incorrect\n" +
+            "- Network connection issue\n" +
+            "- Asset not tokenized yet\n\n" +
+            "Error: " + (error.message || "Unknown error") + "\n" +
+            "Code: " + (error.code || "N/A");
+          alert(errorMsg);
+          setIsPurchasing(false);
+          return;
+        }
+      }
+      
+      // Verify we have a valid tokenID before proceeding
+      if (!isTokenized || !tokenID || tokenID === 0n) {
+        const errorMsg = 
+          "❌ Invalid Token State!\n\n" +
+          "Could not determine valid token ID for this asset.\n\n" +
+          "Please contact the admin to verify the property is properly tokenized.\n\n" +
+          "Asset ID: " + assetID;
+        alert(errorMsg);
+        setIsPurchasing(false);
+        return;
+      }
 
       // Check balance again before second transaction (gas may have changed)
       const balanceAfterFirstTx = await provider.getBalance(buyerAddress);
