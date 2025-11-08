@@ -109,23 +109,31 @@ function CreateProperty() {
       if (res.ok) {
         const createdProperty = result.property;
 
-        await tokenizePropertyOnChain({
-          propertyId: createdProperty._id,
-          propertyName: createdProperty.propertyName,
-          propertyLocation: createdProperty.propertyLocation,
-          propertyPrice: createdProperty.propertyPrice,
-          propertyTokens: createdProperty.propertyTokens,
-        });
+        try {
+          const tokenized = await tokenizePropertyOnChain({
+            propertyId: createdProperty._id,
+            propertyName: createdProperty.propertyName,
+            propertyLocation: createdProperty.propertyLocation,
+            propertyPrice: createdProperty.propertyPrice,
+            propertyTokens: createdProperty.propertyTokens,
+          });
 
-        alert("✅ Property created and tokenized!");
-        setFormData({
-          propertyName: "",
-          propertyLocation: "",
-          propertyPrice: "",
-          propertyTokens: "",
-          propertyImage: null,
-        });
-        setPricePerToken("");
+          if (tokenized) {
+            alert("✅ Property created and tokenized successfully!");
+            setFormData({
+              propertyName: "",
+              propertyLocation: "",
+              propertyPrice: "",
+              propertyTokens: "",
+              propertyImage: null,
+            });
+            setPricePerToken("");
+          }
+        } catch (tokenizeError) {
+          // Error already shown in tokenizePropertyOnChain
+          console.error("Tokenization failed:", tokenizeError);
+          // Don't clear form so user can retry
+        }
       } else {
         alert(result.message || "❌ Failed to create property");
       }
@@ -182,9 +190,28 @@ function CreateProperty() {
       );
       await tx2.wait();
       console.log("✅ Tokens minted!");
+      
+      // Verify tokenization was successful
+      const totalSupply = await tokenizerContract.totalAssetTokenSupplyMap(assetID);
+      const tokenID = await tokenizerContract.assetTokenMap(assetID);
+      console.log("✅ Verification - Total Supply:", totalSupply.toString());
+      console.log("✅ Verification - Token ID:", tokenID.toString());
+      
+      if (totalSupply === 0n || tokenID === 0n) {
+        throw new Error("Tokenization verification failed - supply or tokenID is 0");
+      }
+      
+      return true; // Success
     } catch (err) {
       console.error("❌ Error in on-chain operation:", err);
-      alert("Blockchain interaction failed. See console for details.");
+      const errorMsg = 
+        "❌ Blockchain Tokenization Failed!\n\n" +
+        "The property was created in the database, but tokenization on the blockchain failed.\n\n" +
+        "Error: " + (err.message || "Unknown error") + "\n\n" +
+        "The property cannot be purchased until it's tokenized.\n\n" +
+        "Please try creating the property again, or contact support.";
+      alert(errorMsg);
+      throw err; // Re-throw to prevent showing success message
     }
   };
 

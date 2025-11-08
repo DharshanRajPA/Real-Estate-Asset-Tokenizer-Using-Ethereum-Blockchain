@@ -276,14 +276,25 @@ function PropertyDetails() {
       console.log("🔍 Checking asset tokenization for assetID:", assetID);
 
       // Check if asset has been tokenized
-      // First check totalAssetTokenSupplyMap (more reliable for checking existence)
+      // Try to check both mappings, handling BAD_DATA errors gracefully
       let tokenID;
       let isTokenized = false;
+      let totalSupply = 0n;
       
       try {
-        // Check total supply first - if it's > 0, asset is tokenized
-        const totalSupply = await tokenizer.totalAssetTokenSupplyMap(assetID);
-        console.log("📊 Total Supply:", totalSupply.toString());
+        // Try to get total supply first
+        try {
+          totalSupply = await tokenizer.totalAssetTokenSupplyMap(assetID);
+          console.log("📊 Total Supply:", totalSupply.toString());
+        } catch (supplyError) {
+          // If BAD_DATA error, asset doesn't exist (not tokenized)
+          if (supplyError.code === "BAD_DATA" || supplyError.message?.includes("could not decode") || supplyError.message?.includes("value=\"0x\"")) {
+            console.log("📊 Total Supply check failed - asset not tokenized");
+            totalSupply = 0n;
+          } else {
+            throw supplyError; // Re-throw if it's a different error
+          }
+        }
         
         if (totalSupply > 0n) {
           // Asset is tokenized, now get tokenID
@@ -299,6 +310,11 @@ function PropertyDetails() {
             isTokenized = true;
           } catch (tokenError) {
             // If assetTokenMap fails but totalSupply exists, there's a contract issue
+            if (tokenError.code === "BAD_DATA" || tokenError.message?.includes("could not decode") || tokenError.message?.includes("value=\"0x\"")) {
+              // Even though supply exists, tokenID mapping failed - treat as not tokenized
+              console.warn("⚠️ TokenID mapping failed - treating as not tokenized");
+              throw new Error("Asset not tokenized - tokenID mapping failed");
+            }
             console.error("❌ Error getting tokenID:", tokenError);
             const errorMsg = 
               "❌ Contract State Error!\n\n" +
@@ -341,8 +357,20 @@ function PropertyDetails() {
             assetID,
             error: error.message,
             code: error.code,
-            info: error.info
+            info: error.info,
+            propertyId: property._id,
+            propertyName: property.propertyName
           });
+          
+          // Log detailed info for debugging
+          console.log("📋 Property Details:", {
+            id: property._id,
+            name: property.propertyName,
+            location: property.propertyLocation,
+            tokens: property.propertyTokens,
+            assetID: assetID
+          });
+          
           alert(errorMsg);
           setIsPurchasing(false);
           return;
